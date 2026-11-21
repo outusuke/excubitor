@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """netdiag: socket tables straight from the kernel's NETLINK_SOCK_DIAG interface.
 
 Replaces `ss` and `nsenter`. One netlink dump per (family, protocol) returns addresses,

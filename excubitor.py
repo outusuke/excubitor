@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Excubitor: per-process network monitor (GTK4 + libadwaita).
 
     python3 excubitor.py          # real data via psutil

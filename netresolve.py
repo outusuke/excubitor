@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """netresolve: non-blocking, cached reverse DNS for peer addresses.
 
     r = Resolver()                      # create only if the user enabled "resolve names"

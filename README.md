@@ -34,3 +34,7 @@ The GUI can also install it through pkexec. To restrict the counters file to a g
 - Threads are folded into their process.
 - Counters of an exited process are dropped.
 - Kernel lockdown (Secure Boot) or missing BTF/debugfs can remove the kprobes the helper needs.
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """excubitor-helper: privileged data source for the Excubitor GUI.
 
 It counts UDP and TCP bytes per process, lists sockets (netlink sock_diag) inside sandbox network namespaces,
