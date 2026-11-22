@@ -16,6 +16,10 @@ Needs: PyGObject, GTK 4, libadwaita 1.x, psutil.
 - `netdiag.py`: socket tables from NETLINK_SOCK_DIAG (replaces `ss` and `nsenter`). Entering another namespace needs root.
 - `netresolve.py`: non-blocking cached reverse DNS. Opt-in, since every lookup sends the peer IP to your resolver.
 
+## Packet capture
+
+With exceptor's `exceptor.py` in the same folder, the right-click menu of a process row offers Capture in Wireshark and Record to File (pcapng, no Wireshark). Stop recordings from the main menu. It captures the row's whole program (its systemd scope or network namespace), not just one process, and asks for root through pkexec.
+
 ## Helper
 
 Needs `bpftrace`.

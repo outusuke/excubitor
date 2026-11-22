@@ -35,6 +35,15 @@ except ImportError:
     psutil = None
 
 
+def _exceptor():
+    """exceptor.py (packet capture), if it sits next to this file."""
+    try:
+        import exceptor
+        return exceptor
+    except ImportError:
+        return None
+
+
 # ----------------------------------------------------------------- data model
 class Row(GObject.Object):
     """One row: either a process or one of its connections."""
@@ -475,6 +484,7 @@ class MainWindow(Adw.ApplicationWindow):
         header.pack_start(self.search_btn)
         self._build_menu(header)
         self._build_copy_actions(app)
+        self._build_capture_actions()
         entry = Gtk.SearchEntry(hexpand=True, placeholder_text="Filter by process, PID, address or state")
         entry.connect("search-changed", self._on_search)
         bar = Gtk.SearchBar(child=entry)
@@ -504,6 +514,7 @@ class MainWindow(Adw.ApplicationWindow):
         menu = Gio.Menu()
         sec = Gio.Menu()
         sec.append("Enhanced Monitoring", "win.udp")
+        sec.append("Stop Recordings", "win.stop-rec")
         menu.append_section(None, sec)
         sec = Gio.Menu()
         sec.append("Pause Updates", "win.pause")
@@ -750,6 +761,98 @@ class MainWindow(Adw.ApplicationWindow):
         act("copy-raw", lambda: self._ctx and self._copy(self._ctx[0].remote))
         app.set_accels_for_action("win.copy", ["<Ctrl>c"])
 
+    # ---- packet capture through exceptor.py
+    def _build_capture_actions(self):
+        self.recs = []  # (exceptor Capture, name) being saved to a file
+        for name, fn in (("capture", lambda *_: self._capture(False)),
+                         ("record", lambda *_: self._capture(True)),
+                         ("stop-rec", lambda *_: [c.stop() for c, _n in self.recs])):
+            a = Gio.SimpleAction.new(name, None)
+            a.connect("activate", fn)
+            self.add_action(a)
+        self.act_stop = self.lookup_action("stop-rec")
+        self.act_stop.set_enabled(False)
+
+    @staticmethod
+    def _pids(row):
+        if row.kind == "conn":
+            return {row.pid} if row.pid else set()
+        return {row.pid} if row.pid else {c.pid for c in row.cmap.values() if c.pid}
+
+    def _toast(self, msg):
+        self.toasts.add_toast(Adw.Toast.new(msg))
+
+    def _capture(self, record):
+        ex, item = _exceptor(), (self._ctx[0] if self._ctx else None)
+        if ex is None or item is None or getattr(self, "_scanning", False):
+            return
+        pids = self._pids(item)
+        self._scanning = True
+
+        def work():  # exceptor's /proc scan, off the UI thread
+            try:
+                res = ex.group_for_pids(pids)
+            except OSError as e:
+                res = e
+            GLib.idle_add(self._picked, res, record)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _picked(self, groups, record):
+        self._scanning = False
+        if isinstance(groups, OSError):
+            self._toast(str(groups))
+        elif not groups:
+            self._toast("No capturable sockets")
+        elif len(groups) == 1:
+            self._start(groups[0], record)
+        else:  # the row spans several programs: let the user choose
+            groups = groups[:6]
+            d = Adw.AlertDialog(heading="Capture which program?",
+                                body="This row spans several programs.")
+            d.add_response("cancel", "Cancel")
+            for i, g in enumerate(groups):
+                n = len(g["pids"])
+                d.add_response(str(i), "%s (%d process%s)" % (g["name"], n, "" if n == 1 else "es"))
+            d.set_close_response("cancel")
+            d.connect("response", lambda _d, r: r != "cancel" and self._start(groups[int(r)], record))
+            d.present(self)
+        return False
+
+    def _start(self, g, record):
+        ex = _exceptor()
+
+        def go(path=None):
+            try:
+                c = ex.launch(g, lambda m: GLib.idle_add(self._toast, m), out=path)
+            except (ex.Missing, OSError) as e:
+                return self._toast(str(e))
+            if path:
+                self.recs.append((c, g["name"]))
+        if not record:
+            return go()
+        name = re.sub(r"[^\w.-]+", "_", g["name"]) or "capture"
+        dlg = Gtk.FileDialog(title="Save capture as",
+                             initial_name="%s-%s.pcapng" % (name, time.strftime("%Y%m%d-%H%M%S")))
+
+        def done(d, res):
+            try:
+                f = d.save_finish(res)
+            except GLib.Error:
+                return  # cancelled
+            if f and f.get_path():
+                go(f.get_path())
+        dlg.save(self, None, done)
+
+    def _rec_note(self):
+        """Subtitle suffix for running recordings; reports finished ones."""
+        for c, name in list(self.recs):
+            if c.done.is_set():
+                self.recs.remove((c, name))
+                if c.size():
+                    self._toast("Saved %s" % c.out)
+        self.act_stop.set_enabled(bool(self.recs))
+        return " \u00b7 \u25cf recording %d" % len(self.recs) if self.recs else ""
+
     def _selected(self):
         tree_row = self.selection.get_selected_item()
         return tree_row.get_item() if tree_row else None
@@ -778,6 +881,11 @@ class MainWindow(Adw.ApplicationWindow):
         if fmt is f_remote and item.kind == "conn" and item.host:
             menu.append("Copy IP Address", "win.copy-raw")
         menu.append("Copy Row", "win.copy-row")
+        if _exceptor() and self._pids(item):
+            sec = Gio.Menu()
+            sec.append("Capture in Wireshark", "win.capture")
+            sec.append("Record to File\u2026", "win.record")
+            menu.append_section(None, sec)
         pop = Gtk.PopoverMenu.new_from_model(menu)
         pop.set_parent(gesture.get_widget())
         pop.set_has_arrow(False)
@@ -905,7 +1013,7 @@ class MainWindow(Adw.ApplicationWindow):
         up = sum(max(r.up, 0.0) for r in self.procs.values())
         self._subtitle = (f"{len(self.procs)} processes · {total} connections · "
                           f"↓ {rate(down)}  ↑ {rate(up)}")
-        self.title.set_subtitle(self._subtitle)
+        self.title.set_subtitle(self._subtitle + self._rec_note())
         if self.query or self.hide_idle:
             self.filter.changed(Gtk.FilterChange.DIFFERENT)
         self.row_sorter.changed(Gtk.SorterChange.DIFFERENT)  # re-sort by changed rates
