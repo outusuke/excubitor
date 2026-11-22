@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Exceptor: pick a program, get its packets in Wireshark (GTK4 + libadwaita).
+"""excapture: capture one program's packets into Wireshark or a pcapng file (used by excubitor).
 
 No external downloads: everything comes from distro packages.
 - Programs with their own network namespace (Flatpak/bwrap --unshare-net, podman,
@@ -11,14 +11,13 @@ No external downloads: everything comes from distro packages.
   dumpcap reads. A bwrap tree that shares a cgroup with other programs is moved
   into a temporary cgroup while capturing, then moved back.
 Both end up piped into `wireshark -k -i -`, or into a pcapng file when recording without Wireshark.
-A program can also be started from here: it is held inside a fresh systemd scope
-until the capture is listening, so its very first packets are recorded.
+run_program() starts a program held inside a fresh systemd scope until the capture is
+listening, so its very first packets are recorded.
 Needs: wireshark, wireshark-cli (dumpcap), nftables, iproute (ss), polkit (pkexec);
 netdiag.py alongside.
 """
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import threading
@@ -431,191 +430,3 @@ def run_program(argv, on_error, out=None):
     except BaseException:
         release(False)
         raise
-
-
-def main():
-    import gi
-    gi.require_version("Gtk", "4.0")
-    gi.require_version("Adw", "1")
-    from gi.repository import Adw, GLib, Gtk
-
-    class Win(Adw.ApplicationWindow):
-        def __init__(self, app):
-            super().__init__(application=app, title="Exceptor", default_width=560, default_height=640)
-            self.toasts = Adw.ToastOverlay()
-            view = Adw.ToolbarView()
-            header = Adw.HeaderBar()
-            refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh (F5)")
-            refresh.connect("clicked", lambda *_: self.refresh())
-            header.pack_start(refresh)
-            run = Gtk.Button(label="Run\u2026", tooltip_text="Run a program and capture it from its first packet")
-            run.connect("clicked", self.ask_run)
-            header.pack_start(run)
-            self.last_cmd = ""
-            self.idle_rows = set()
-            self.idle_btn = Gtk.ToggleButton(label="Idle", tooltip_text="Show programs with no connections")
-            self.idle_btn.connect("toggled", lambda *_: self.list.invalidate_filter())
-            header.pack_end(self.idle_btn)
-            self.search = Gtk.SearchEntry(placeholder_text="Filter programs", hexpand=True, margin_start=12,
-                                          margin_end=12, margin_top=6, margin_bottom=6)
-            self.search.connect("search-changed", lambda *_: self.list.invalidate_filter())
-            self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"],
-                                    margin_start=12, margin_end=12, margin_bottom=12)
-            self.recs = []                 # [(Capture, row)] of captures being saved to a file
-            self.rec_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"],
-                                        margin_start=12, margin_end=12, margin_bottom=12, visible=False)
-            self.list.set_filter_func(self.visible)
-            self.list.set_placeholder(Gtk.Label(label="No programs with connections. Press Idle to show the rest.",
-                                                margin_top=24, margin_bottom=24, css_classes=["dim-label"]))
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            box.append(self.search)
-            box.append(self.rec_list)
-            box.append(self.list)
-            scroll = Gtk.ScrolledWindow(vexpand=True, child=box)
-            view.add_top_bar(header)
-            view.set_content(scroll)
-            self.toasts.set_child(view)
-            self.set_content(self.toasts)
-            key = Gtk.ShortcutController()
-            key.add_shortcut(Gtk.Shortcut(trigger=Gtk.ShortcutTrigger.parse_string("F5"),
-                                          action=Gtk.CallbackAction.new(lambda *_: self.refresh() or True)))
-            self.add_controller(key)
-            GLib.timeout_add_seconds(1, self.tick)
-            self.refresh()
-
-        def visible(self, row):
-            text = self.search.get_text().lower()
-            if text:                       # searching also looks through idle programs
-                return text in row.get_title().lower()
-            return self.idle_btn.get_active() or row not in self.idle_rows
-
-        def ask_run(self, *_):
-            entry = Gtk.Entry(text=self.last_cmd, placeholder_text="e.g. curl https://example.com",
-                              activates_default=True)
-            d = Adw.AlertDialog(heading="Run and capture",
-                                body="Starts the command in its own cgroup and records its traffic from the "
-                                     "very first packet. Programs that hand off to an already-running "
-                                     "instance (browsers) or that start their own scope (Flatpak) can't be "
-                                     "followed this way.")
-            d.set_extra_child(entry)
-            d.add_response("cancel", "Cancel")
-            d.add_response("record", "Run and record\u2026")
-            d.add_response("run", "Run and capture")
-            d.set_response_appearance("run", Adw.ResponseAppearance.SUGGESTED)
-            d.set_default_response("run")
-            d.set_close_response("cancel")
-            def answer(_d, r):
-                text = entry.get_text()
-                if r == "run":
-                    self.run_command(text)
-                elif r == "record":
-                    self.pick_file(text.split()[0] if text.split() else "program",
-                                   lambda path: self.run_command(text, path))
-            d.connect("response", answer)
-            d.present(self)
-
-        def run_command(self, text, out=None):
-            self.last_cmd = text
-            try:
-                argv = shlex.split(text)
-                if argv:
-                    c = run_program(argv, lambda m: GLib.idle_add(self.toast, m), out)
-                    if out:
-                        self.add_recording(argv[0], c)
-            except (Missing, OSError, ValueError) as e:
-                self.toast(str(e))
-
-        def pick_file(self, name, then):
-            name = re.sub(r"[^\w.-]+", "_", name) or "capture"
-            dlg = Gtk.FileDialog(title="Save capture as", initial_name="%s-%s.pcapng" % (name, time.strftime("%Y%m%d-%H%M%S")))
-
-            def done(d, res):
-                try:
-                    f = d.save_finish(res)
-                except GLib.Error:
-                    return                  # cancelled
-                if f and f.get_path():
-                    then(f.get_path())
-            dlg.save(self, None, done)
-
-        def add_recording(self, name, c):
-            row = Adw.ActionRow(title="Recording: " + name, use_markup=False)
-            btn = Gtk.Button(label="Stop", valign=Gtk.Align.CENTER, css_classes=["destructive-action"])
-            btn.connect("clicked", lambda *_: c.stop())
-            row.add_suffix(btn)
-            self.rec_list.append(row)
-            self.recs.append((c, row))
-            self.rec_list.set_visible(True)
-            self.tick()
-
-        def tick(self):
-            for c, row in list(self.recs):
-                if c.done.is_set():
-                    self.recs.remove((c, row))
-                    self.rec_list.remove(row)
-                    if c.size():
-                        self.toast("Saved %s (%s)" % (c.out, self.human(c.size())))
-                else:
-                    row.set_subtitle("%s \u00b7 %s" % (c.out, self.human(c.size())))
-            self.rec_list.set_visible(bool(self.recs))
-            return True
-
-        @staticmethod
-        def human(n):
-            for u in ("B", "KiB", "MiB", "GiB"):
-                if n < 1024 or u == "GiB":
-                    return "%d %s" % (n, u) if u == "B" else "%.1f %s" % (n, u)
-                n /= 1024
-
-        def record(self, _btn, g):
-            def go(path):
-                try:
-                    self.add_recording(g["name"], launch(g, lambda m: GLib.idle_add(self.toast, m), out=path))
-                except (Missing, OSError) as e:
-                    self.toast(str(e))
-            self.pick_file(g["name"], go)
-
-        def toast(self, msg):
-            self.toasts.add_toast(Adw.Toast(title=msg, timeout=8))
-
-        def refresh(self):
-            while (r := self.list.get_first_child()):
-                self.list.remove(r)
-            self.idle_rows.clear()
-            idle = 0
-            for g in scan():
-                n = len(g["pids"]) + g["helpers"]
-                if g["sandbox"]:
-                    sub = "sandboxed: captures its whole network namespace"
-                else:
-                    sub = "%d connection%s" % (g["conns"], "" if g["conns"] == 1 else "s")
-                    if g["kind"] == "bwrap":
-                        sub = "bwrap, shared network · " + sub
-                row = Adw.ActionRow(title=g["name"], use_markup=False,
-                                    subtitle="%s · %d process%s" % (sub, n, "" if n == 1 else "es"))
-                rec = Gtk.Button(label="Record", valign=Gtk.Align.CENTER,
-                                 tooltip_text="Record to a file, without opening Wireshark")
-                rec.connect("clicked", self.record, g)
-                row.add_suffix(rec)
-                btn = Gtk.Button(label="Capture", valign=Gtk.Align.CENTER, css_classes=["suggested-action"])
-                btn.connect("clicked", self.capture, g)
-                row.add_suffix(btn)
-                if g["idle"]:
-                    self.idle_rows.add(row)
-                    idle += 1
-                self.list.append(row)
-            self.idle_btn.set_label("Idle (%d)" % idle)
-
-        def capture(self, _btn, g):
-            try:
-                launch(g, lambda m: GLib.idle_add(self.toast, m))
-            except (Missing, OSError) as e:
-                self.toast(str(e))
-
-    app = Adw.Application(application_id="local.exceptor")
-    app.connect("activate", lambda a: Win(a).present())
-    app.run(None)
-
-
-if __name__ == "__main__":
-    main()
