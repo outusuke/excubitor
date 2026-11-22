@@ -36,16 +36,16 @@ except ImportError:
 
 
 def _exceptor():
-    """exceptor.py (packet capture), if it sits next to this file."""
+    """excapture.py (packet capture), if it sits next to this file."""
     try:
-        import exceptor
-        return exceptor
+        import excapture
+        return excapture
     except ImportError:
         return None
 
 
 # ------------------------------------------------------------ install / uninstall
-APP_FILES = ("excubitor.py", "excubitor-helper.py", "netdiag.py", "netresolve.py", "exceptor.py", "LICENSE")
+APP_FILES = ("excubitor.py", "excubitor-helper.py", "netdiag.py", "netresolve.py", "excapture.py", "LICENSE")
 DESKTOP = """[Desktop Entry]
 Type=Application
 Name=Excubitor
