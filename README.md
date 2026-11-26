@@ -44,6 +44,18 @@ The GUI can also install it through pkexec. To restrict the counters file to a g
 - Counters of an exited process are dropped.
 - Kernel lockdown (Secure Boot) or missing BTF/debugfs can remove the kprobes the helper needs.
 
+## Development
+
+`excubitor.py` is built from the fragments in `src/` by `build.py`, so installing and `python3 excubitor.py` work from a plain checkout. Edit `src/`, then:
+
+```
+python3 build.py            # rewrite excubitor.py
+python3 build.py --check    # fail if excubitor.py is out of date
+python3 build.py --report   # what each layer uses
+```
+
+The file name number is the layer (`00_prelude` lowest, `90_app` highest). A fragment may use names from its own layer or a lower one, never a higher one; the build fails if it does. `tools/verify_split.py` compares a built `excubitor.py` with an earlier commit's (AST, lines, behaviour under GTK).
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
